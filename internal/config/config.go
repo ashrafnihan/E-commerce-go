@@ -6,14 +6,14 @@ import (
 )
 
 type Config struct {
-	AppEnv    string
-	HTTPAddr  string
+	AppEnv   string
+	HTTPAddr string
 
 	DatabaseURL string
 
-	JWTIssuer        string
-	JWTAccessSecret  string
-	JWTRefreshSecret string
+	JWTIssuer           string
+	JWTAccessSecret     string
+	JWTRefreshSecret    string
 	AccessTokenTTLMin   int
 	RefreshTokenTTLDays int
 
@@ -25,18 +25,20 @@ type Config struct {
 
 	AppBaseURL string
 	ResetPath  string
+
+	OTPTTLMin int
 }
 
 func Load() Config {
 	return Config{
-		AppEnv:     get("APP_ENV", "dev"),
-		HTTPAddr:   get("HTTP_ADDR", ":8080"),
+		AppEnv:    get("APP_ENV", "dev"),
+		HTTPAddr: get("HTTP_ADDR", ":8080"),
 
 		DatabaseURL: get("DATABASE_URL", ""),
 
-		JWTIssuer:        get("JWT_ISSUER", "ecommerce"),
-		JWTAccessSecret:  get("JWT_ACCESS_SECRET", ""),
-		JWTRefreshSecret: get("JWT_REFRESH_SECRET", ""),
+		JWTIssuer:           get("JWT_ISSUER", "ecommerce"),
+		JWTAccessSecret:     get("JWT_ACCESS_SECRET", ""),
+		JWTRefreshSecret:    get("JWT_REFRESH_SECRET", ""),
 		AccessTokenTTLMin:   getInt("ACCESS_TOKEN_TTL_MIN", 15),
 		RefreshTokenTTLDays: getInt("REFRESH_TOKEN_TTL_DAYS", 30),
 
@@ -48,6 +50,8 @@ func Load() Config {
 
 		AppBaseURL: get("APP_BASE_URL", "http://localhost:8080"),
 		ResetPath:  get("RESET_PATH", "/reset-password"),
+
+		OTPTTLMin: getInt("OTP_TTL_MIN", 10),
 	}
 }
 
