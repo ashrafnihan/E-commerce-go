@@ -10,6 +10,10 @@ import (
 	"ecommerce/internal/config"
 	"ecommerce/internal/db"
 	"ecommerce/internal/mail"
+	"ecommerce/internal/cart"
+	"ecommerce/internal/categories"
+	"ecommerce/internal/products"
+
 )
 
 func main() {
@@ -56,6 +60,17 @@ func main() {
 		Mailer:  mailer,
 	})
 
+// Catalog repos/handlers
+	catRepo := categories.NewRepo(pool)
+	catHandler := categories.NewHandler(catRepo)
+
+	prodRepo := products.NewRepo(pool)
+	prodHandler := products.NewHandler(prodRepo)
+
+	cartRepo := cart.NewRepo(pool)
+	cartHandler := cart.NewHandler(cartRepo)
+
+
 	r := gin.Default()
 
 	// Auth routes
@@ -77,17 +92,39 @@ func main() {
 		authGroup.POST("/reset-password", h.ResetPassword)
 	}
 
+	// Public catalog routes (no login required)
+	api.GET("/categories", catHandler.ListPublic)
+	api.GET("/products", prodHandler.ListPublic)
+	api.GET("/products/:id", prodHandler.GetPublic)
+
+
 	// Protected example routes
 	protected := api.Group("/")
 	protected.Use(auth.AuthMiddleware(jwtMgr))
 	{
 		protected.GET("/me", h.Me)
 
+		// user must login for cart
+		protected.GET("/cart", cartHandler.GetMyCart)
+		protected.POST("/cart/items", cartHandler.AddItem)
+		protected.PATCH("/cart/items", cartHandler.UpdateQty)
+		protected.DELETE("/cart/items", cartHandler.RemoveItem)
+
 		adminOnly := protected.Group("/admin")
 		adminOnly.Use(auth.RequireRole("admin"))
+
 		adminOnly.GET("/dashboard", func(c *gin.Context) {
 			c.JSON(200, gin.H{"ok": true, "message": "admin access granted"})
 		})
+
+		// admin category CRUD
+		adminOnly.GET("/categories", catHandler.AdminList)
+		adminOnly.POST("/categories", catHandler.AdminCreate)
+		adminOnly.PATCH("/categories/:id", catHandler.AdminUpdate)
+
+		// admin add product
+		adminOnly.POST("/products", prodHandler.AdminCreate)
+	
 	}
 
 	log.Printf("listening on %s", cfg.HTTPAddr)
