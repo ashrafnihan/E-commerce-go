@@ -24,7 +24,7 @@ func (h *Handler) ListPublic(c *gin.Context) {
 		cat = &v
 	}
 
-	items, err := h.repo.ListPublic(c.Request.Context(), cat)
+	items, err := h.repo.ListPublic(cat)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list products"})
 		return
@@ -35,7 +35,7 @@ func (h *Handler) ListPublic(c *gin.Context) {
 // Public: product details with variants
 func (h *Handler) GetPublic(c *gin.Context) {
 	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
-	p, err := h.repo.GetProductPublic(c.Request.Context(), id)
+	p, err := h.repo.GetProductPublic(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "product not found"})
 		return
@@ -45,7 +45,7 @@ func (h *Handler) GetPublic(c *gin.Context) {
 
 type CreateProductReq struct {
 	CategoryID  int64  `json:"category_id" binding:"required"`
-	TypeName    string `json:"type_name" binding:"required"` // e.g. "Formal Shirt"
+	TypeName    string `json:"type_name" binding:"required"`
 	Name        string `json:"name" binding:"required"`
 	Description string `json:"description"`
 
@@ -53,10 +53,10 @@ type CreateProductReq struct {
 }
 
 type CreateVariantReq struct {
-	Size            string  `json:"size" binding:"required"` // e.g. M, L, XL
-	Color           string  `json:"color" binding:"required"` // e.g. Red, Black
+	Size            string  `json:"size" binding:"required"`
+	Color           string  `json:"color" binding:"required"`
 	Price           float64 `json:"price" binding:"required"`
-	DiscountPercent int     `json:"discount_percent"` // 0-100
+	DiscountPercent int     `json:"discount_percent"`
 	StockQty        int     `json:"stock_qty" binding:"required"`
 }
 
@@ -82,7 +82,7 @@ func (h *Handler) AdminCreate(c *gin.Context) {
 		})
 	}
 
-	p, err := h.repo.CreateProductWithVariants(c.Request.Context(), CreateProductInput{
+	p, err := h.repo.CreateProductWithVariants(CreateProductInput{
 		CategoryID:  req.CategoryID,
 		TypeName:    req.TypeName,
 		Name:        req.Name,

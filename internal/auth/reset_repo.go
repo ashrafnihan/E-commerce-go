@@ -1,42 +1,52 @@
 package auth
 
 import (
-	"context"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 )
 
-type ResetRepo struct {
-	db *pgxpool.Pool
+// PasswordReset is the GORM model for password_resets table
+type PasswordReset struct {
+	ID        int64      `gorm:"primaryKey;autoIncrement"`
+	UserID    int64      `gorm:"not null;index"`
+	TokenHash string     `gorm:"column:token_hash;not null"`
+	ExpiresAt time.Time  `gorm:"not null"`
+	UsedAt    *time.Time `gorm:""`
+	CreatedAt time.Time  `gorm:"autoCreateTime"`
 }
 
-func NewResetRepo(db *pgxpool.Pool) *ResetRepo {
+func (PasswordReset) TableName() string { return "password_resets" }
+
+type ResetRepo struct {
+	db *gorm.DB
+}
+
+func NewResetRepo(db *gorm.DB) *ResetRepo {
 	return &ResetRepo{db: db}
 }
 
-func (r *ResetRepo) Create(ctx context.Context, userID int64, tokenHash string, expiresAt time.Time) error {
-	_, err := r.db.Exec(ctx, `
-		INSERT INTO password_resets (user_id, token_hash, expires_at)
-		VALUES ($1,$2,$3)
-	`, userID, tokenHash, expiresAt)
-	return err
+func (r *ResetRepo) Create(userID int64, tokenHash string, expiresAt time.Time) error {
+	pr := PasswordReset{
+		UserID:    userID,
+		TokenHash: tokenHash,
+		ExpiresAt: expiresAt,
+	}
+	return r.db.Create(&pr).Error
 }
 
-func (r *ResetRepo) Consume(ctx context.Context, tokenHash string) (int64, bool, error) {
-	// Mark as used if valid; return user_id
-	var userID int64
-	err := r.db.QueryRow(ctx, `
-		UPDATE password_resets
-		SET used_at=now()
-		WHERE token_hash=$1
-		  AND used_at IS NULL
-		  AND expires_at > now()
-		RETURNING user_id
-	`, tokenHash).Scan(&userID)
+func (r *ResetRepo) Consume(tokenHash string) (int64, bool, error) {
+	var pr PasswordReset
+	now := time.Now()
+
+	// Find the valid reset token
+	err := r.db.Where("token_hash = ? AND used_at IS NULL AND expires_at > ?", tokenHash, now).
+		First(&pr).Error
 	if err != nil {
-		// no rows => invalid/expired/used
-		return 0, false, nil
+		return 0, false, nil // not found or expired
 	}
-	return userID, true, nil
+
+	// Mark as used
+	r.db.Model(&pr).Update("used_at", now)
+	return pr.UserID, true, nil
 }

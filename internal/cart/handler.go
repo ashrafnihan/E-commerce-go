@@ -20,7 +20,7 @@ func (h *Handler) GetMyCart(c *gin.Context) {
 	userIDAny, _ := c.Get(auth.CtxUserIDKey)
 	userID := userIDAny.(int64)
 
-	crt, err := h.repo.GetCart(c.Request.Context(), userID)
+	crt, err := h.repo.GetCart(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load cart"})
 		return
@@ -43,7 +43,7 @@ func (h *Handler) AddItem(c *gin.Context) {
 		return
 	}
 
-	if err := h.repo.AddItem(c.Request.Context(), userID, req.VariantID, req.Qty); err != nil {
+	if err := h.repo.AddItem(userID, req.VariantID, req.Qty); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to add item"})
 		return
 	}
@@ -66,7 +66,7 @@ func (h *Handler) UpdateQty(c *gin.Context) {
 		return
 	}
 
-	if err := h.repo.UpdateQty(c.Request.Context(), userID, req.VariantID, req.Qty); err != nil {
+	if err := h.repo.UpdateQty(userID, req.VariantID, req.Qty); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to update qty"})
 		return
 	}
@@ -88,7 +88,7 @@ func (h *Handler) RemoveItem(c *gin.Context) {
 		return
 	}
 
-	if err := h.repo.RemoveItem(c.Request.Context(), userID, req.VariantID); err != nil {
+	if err := h.repo.RemoveItem(userID, req.VariantID); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to remove item"})
 		return
 	}

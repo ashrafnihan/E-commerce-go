@@ -7,13 +7,12 @@ import (
 	"github.com/joho/godotenv"
 
 	"ecommerce/internal/auth"
+	"ecommerce/internal/cart"
+	"ecommerce/internal/categories"
 	"ecommerce/internal/config"
 	"ecommerce/internal/db"
 	"ecommerce/internal/mail"
-	"ecommerce/internal/cart"
-	"ecommerce/internal/categories"
 	"ecommerce/internal/products"
-
 )
 
 func main() {
@@ -21,11 +20,12 @@ func main() {
 
 	cfg := config.Load()
 
-	pool, err := db.NewPostgres(cfg.DatabaseURL)
+	gormDB, err := db.NewPostgres(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer pool.Close()
+	sqlDB, _ := gormDB.DB()
+	defer sqlDB.Close()
 
 	mailer := mail.NewSMTPMailer(mail.SMTPConfig{
 		Host: cfg.SMTPHost,
@@ -43,11 +43,11 @@ func main() {
 		RefreshTTLDays: cfg.RefreshTokenTTLDays,
 	})
 
-	// Repos
-	userRepo := auth.NewUserRepo(pool)
-	refreshRepo := auth.NewRefreshRepo(pool)
-	resetRepo := auth.NewResetRepo(pool) // kept (not used in OTP reset flow, but fine)
-	otpRepo := auth.NewOTPRepo(pool)
+	// Repos (all using GORM now)
+	userRepo := auth.NewUserRepo(gormDB)
+	refreshRepo := auth.NewRefreshRepo(gormDB)
+	resetRepo := auth.NewResetRepo(gormDB)
+	otpRepo := auth.NewOTPRepo(gormDB)
 
 	// Handler with OTP dependency
 	h := auth.NewHandler(auth.Dependencies{
@@ -60,16 +60,15 @@ func main() {
 		Mailer:  mailer,
 	})
 
-// Catalog repos/handlers
-	catRepo := categories.NewRepo(pool)
+	// Catalog repos/handlers (GORM)
+	catRepo := categories.NewRepo(gormDB)
 	catHandler := categories.NewHandler(catRepo)
 
-	prodRepo := products.NewRepo(pool)
+	prodRepo := products.NewRepo(gormDB)
 	prodHandler := products.NewHandler(prodRepo)
 
-	cartRepo := cart.NewRepo(pool)
+	cartRepo := cart.NewRepo(gormDB)
 	cartHandler := cart.NewHandler(cartRepo)
-
 
 	r := gin.Default()
 
@@ -97,14 +96,13 @@ func main() {
 	api.GET("/products", prodHandler.ListPublic)
 	api.GET("/products/:id", prodHandler.GetPublic)
 
-
-	// Protected example routes
+	// Protected routes
 	protected := api.Group("/")
 	protected.Use(auth.AuthMiddleware(jwtMgr))
 	{
 		protected.GET("/me", h.Me)
 
-		// user must login for cart
+		// Cart (user must login)
 		protected.GET("/cart", cartHandler.GetMyCart)
 		protected.POST("/cart/items", cartHandler.AddItem)
 		protected.PATCH("/cart/items", cartHandler.UpdateQty)
@@ -117,14 +115,13 @@ func main() {
 			c.JSON(200, gin.H{"ok": true, "message": "admin access granted"})
 		})
 
-		// admin category CRUD
+		// Admin category CRUD
 		adminOnly.GET("/categories", catHandler.AdminList)
 		adminOnly.POST("/categories", catHandler.AdminCreate)
 		adminOnly.PATCH("/categories/:id", catHandler.AdminUpdate)
 
-		// admin add product
+		// Admin add product
 		adminOnly.POST("/products", prodHandler.AdminCreate)
-	
 	}
 
 	log.Printf("listening on %s", cfg.HTTPAddr)

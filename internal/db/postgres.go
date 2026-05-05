@@ -1,28 +1,33 @@
 package db
 
 import (
-	"context"
-	"time"
+	"log"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-func NewPostgres(databaseURL string) (*pgxpool.Pool, error) {
-	cfg, err := pgxpool.ParseConfig(databaseURL)
+func NewPostgres(databaseURL string) (*gorm.DB, error) {
+	db, err := gorm.Open(postgres.Open(databaseURL), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Warn),
+	})
 	if err != nil {
 		return nil, err
 	}
-	cfg.MaxConns = 10
-	cfg.MinConns = 2
-	cfg.MaxConnLifetime = time.Hour
 
-	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, err
 	}
-	if err := pool.Ping(context.Background()); err != nil {
-		pool.Close()
+	sqlDB.SetMaxOpenConns(10)
+	sqlDB.SetMaxIdleConns(2)
+
+	if err := sqlDB.Ping(); err != nil {
+		sqlDB.Close()
 		return nil, err
 	}
-	return pool, nil
+
+	log.Println("database connected (GORM)")
+	return db, nil
 }

@@ -5,8 +5,6 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-
-	"ecommerce/internal/auth"
 )
 
 type Handler struct {
@@ -18,7 +16,7 @@ func NewHandler(repo *Repo) *Handler {
 }
 
 func (h *Handler) ListPublic(c *gin.Context) {
-	items, err := h.repo.ListActive(c.Request.Context())
+	items, err := h.repo.ListActive()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list categories"})
 		return
@@ -27,7 +25,7 @@ func (h *Handler) ListPublic(c *gin.Context) {
 }
 
 func (h *Handler) AdminList(c *gin.Context) {
-	items, err := h.repo.AdminListAll(c.Request.Context())
+	items, err := h.repo.AdminListAll()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list categories"})
 		return
@@ -41,15 +39,12 @@ type CreateCategoryReq struct {
 }
 
 func (h *Handler) AdminCreate(c *gin.Context) {
-	// admin is already enforced by middleware
-	_ = c.GetString(auth.CtxRoleKey)
-
 	var req CreateCategoryReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
-	created, err := h.repo.Create(c.Request.Context(), req.Name, req.SortOrder)
+	created, err := h.repo.Create(req.Name, req.SortOrder)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to create (slug may be duplicate)"})
 		return
@@ -71,7 +66,7 @@ func (h *Handler) AdminUpdate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
-	updated, err := h.repo.Update(c.Request.Context(), id, req.Name, req.SortOrder, req.IsActive)
+	updated, err := h.repo.Update(id, req.Name, req.SortOrder, req.IsActive)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to update"})
 		return

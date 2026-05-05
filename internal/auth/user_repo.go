@@ -1,64 +1,64 @@
 package auth
 
 import (
-	"context"
 	"errors"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"ecommerce/internal/domain/user"
 )
 
 type UserRepo struct {
-	db *pgxpool.Pool
+	db *gorm.DB
 }
 
-func NewUserRepo(db *pgxpool.Pool) *UserRepo {
+func NewUserRepo(db *gorm.DB) *UserRepo {
 	return &UserRepo{db: db}
 }
 
-func (r *UserRepo) Create(ctx context.Context, email, passwordHash, role string) (user.User, error) {
-	var u user.User
-	err := r.db.QueryRow(ctx, `
-		INSERT INTO users (email, password_hash, role, email_verified)
-		VALUES ($1,$2,$3,false)
-		RETURNING id, email, password_hash, role, is_active, email_verified, created_at, updated_at
-	`, email, passwordHash, role).Scan(
-		&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.IsActive, &u.EmailVerified, &u.CreatedAt, &u.UpdatedAt,
-	)
-	return u, err
-}
-
-func (r *UserRepo) ByEmail(ctx context.Context, email string) (user.User, error) {
-	var u user.User
-	err := r.db.QueryRow(ctx, `
-		SELECT id, email, password_hash, role, is_active, email_verified, created_at, updated_at
-		FROM users WHERE email=$1
-	`, email).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.IsActive, &u.EmailVerified, &u.CreatedAt, &u.UpdatedAt)
-	return u, err
-}
-
-func (r *UserRepo) ByID(ctx context.Context, id int64) (user.User, error) {
-	var u user.User
-	err := r.db.QueryRow(ctx, `
-		SELECT id, email, password_hash, role, is_active, email_verified, created_at, updated_at
-		FROM users WHERE id=$1
-	`, id).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.IsActive, &u.EmailVerified, &u.CreatedAt, &u.UpdatedAt)
-	return u, err
-}
-
-func (r *UserRepo) UpdatePassword(ctx context.Context, userID int64, newHash string) error {
-	ct, err := r.db.Exec(ctx, `UPDATE users SET password_hash=$1 WHERE id=$2`, newHash, userID)
-	if err != nil {
-		return err
+func (r *UserRepo) Create(email, passwordHash, role string) (user.User, error) {
+	u := user.User{
+		Email:         email,
+		PasswordHash:  passwordHash,
+		Role:          role,
+		IsActive:      true,
+		EmailVerified: false,
 	}
-	if ct.RowsAffected() == 0 {
+	if err := r.db.Create(&u).Error; err != nil {
+		return user.User{}, err
+	}
+	return u, nil
+}
+
+func (r *UserRepo) ByEmail(email string) (user.User, error) {
+	var u user.User
+	err := r.db.Where("email = ?", email).First(&u).Error
+	if err != nil {
+		return user.User{}, err
+	}
+	return u, nil
+}
+
+func (r *UserRepo) ByID(id int64) (user.User, error) {
+	var u user.User
+	err := r.db.First(&u, id).Error
+	if err != nil {
+		return user.User{}, err
+	}
+	return u, nil
+}
+
+func (r *UserRepo) UpdatePassword(userID int64, newHash string) error {
+	result := r.db.Model(&user.User{}).Where("id = ?", userID).Update("password_hash", newHash)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
 		return errors.New("user not found")
 	}
 	return nil
 }
 
-func (r *UserRepo) SetEmailVerified(ctx context.Context, userID int64) error {
-	_, err := r.db.Exec(ctx, `UPDATE users SET email_verified=true WHERE id=$1`, userID)
-	return err
+func (r *UserRepo) SetEmailVerified(userID int64) error {
+	return r.db.Model(&user.User{}).Where("id = ?", userID).Update("email_verified", true).Error
 }

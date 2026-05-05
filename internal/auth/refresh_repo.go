@@ -1,46 +1,52 @@
 package auth
 
 import (
-	"context"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 )
 
-type RefreshRepo struct {
-	db *pgxpool.Pool
+// RefreshToken is the GORM model for refresh_tokens table
+type RefreshToken struct {
+	ID        int64      `gorm:"primaryKey;autoIncrement"`
+	UserID    int64      `gorm:"not null;index"`
+	TokenHash string     `gorm:"column:token_hash;not null"`
+	ExpiresAt time.Time  `gorm:"not null"`
+	RevokedAt *time.Time `gorm:""`
+	CreatedAt time.Time  `gorm:"autoCreateTime"`
 }
 
-func NewRefreshRepo(db *pgxpool.Pool) *RefreshRepo {
+func (RefreshToken) TableName() string { return "refresh_tokens" }
+
+type RefreshRepo struct {
+	db *gorm.DB
+}
+
+func NewRefreshRepo(db *gorm.DB) *RefreshRepo {
 	return &RefreshRepo{db: db}
 }
 
-func (r *RefreshRepo) Store(ctx context.Context, userID int64, tokenHash string, expiresAt time.Time) error {
-	_, err := r.db.Exec(ctx, `
-		INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-		VALUES ($1,$2,$3)
-	`, userID, tokenHash, expiresAt)
-	return err
+func (r *RefreshRepo) Store(userID int64, tokenHash string, expiresAt time.Time) error {
+	rt := RefreshToken{
+		UserID:    userID,
+		TokenHash: tokenHash,
+		ExpiresAt: expiresAt,
+	}
+	return r.db.Create(&rt).Error
 }
 
-func (r *RefreshRepo) IsValid(ctx context.Context, userID int64, tokenHash string) (bool, error) {
-	var ok bool
-	err := r.db.QueryRow(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM refresh_tokens
-			WHERE user_id=$1 AND token_hash=$2
-			  AND revoked_at IS NULL
-			  AND expires_at > now()
-		)
-	`, userID, tokenHash).Scan(&ok)
-	return ok, err
+func (r *RefreshRepo) IsValid(userID int64, tokenHash string) (bool, error) {
+	var count int64
+	err := r.db.Model(&RefreshToken{}).
+		Where("user_id = ? AND token_hash = ? AND revoked_at IS NULL AND expires_at > ?",
+			userID, tokenHash, time.Now()).
+		Count(&count).Error
+	return count > 0, err
 }
 
-func (r *RefreshRepo) Revoke(ctx context.Context, userID int64, tokenHash string) error {
-	_, err := r.db.Exec(ctx, `
-		UPDATE refresh_tokens
-		SET revoked_at=now()
-		WHERE user_id=$1 AND token_hash=$2 AND revoked_at IS NULL
-	`, userID, tokenHash)
-	return err
+func (r *RefreshRepo) Revoke(userID int64, tokenHash string) error {
+	now := time.Now()
+	return r.db.Model(&RefreshToken{}).
+		Where("user_id = ? AND token_hash = ? AND revoked_at IS NULL", userID, tokenHash).
+		Update("revoked_at", now).Error
 }

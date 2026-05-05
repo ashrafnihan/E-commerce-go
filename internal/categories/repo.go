@@ -1,99 +1,72 @@
 package categories
 
 import (
-	"context"
-
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
 
 	"ecommerce/internal/domain/category"
 	"ecommerce/internal/util"
 )
 
 type Repo struct {
-	db *pgxpool.Pool
+	db *gorm.DB
 }
 
-func NewRepo(db *pgxpool.Pool) *Repo {
+func NewRepo(db *gorm.DB) *Repo {
 	return &Repo{db: db}
 }
 
-func (r *Repo) ListActive(ctx context.Context) ([]category.Category, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT id, name, slug, is_active, sort_order, created_at, updated_at
-		FROM categories
-		WHERE is_active = true
-		ORDER BY sort_order ASC, name ASC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
+func (r *Repo) ListActive() ([]category.Category, error) {
 	var out []category.Category
-	for rows.Next() {
-		var c category.Category
-		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.IsActive, &c.SortOrder, &c.CreatedAt, &c.UpdatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
+	err := r.db.Where("is_active = ?", true).
+		Order("sort_order ASC, name ASC").
+		Find(&out).Error
+	return out, err
 }
 
-func (r *Repo) AdminListAll(ctx context.Context) ([]category.Category, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT id, name, slug, is_active, sort_order, created_at, updated_at
-		FROM categories
-		ORDER BY sort_order ASC, name ASC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
+func (r *Repo) AdminListAll() ([]category.Category, error) {
 	var out []category.Category
-	for rows.Next() {
-		var c category.Category
-		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.IsActive, &c.SortOrder, &c.CreatedAt, &c.UpdatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
+	err := r.db.Order("sort_order ASC, name ASC").Find(&out).Error
+	return out, err
+}
+
+func (r *Repo) Create(name string, sortOrder int) (category.Category, error) {
+	c := category.Category{
+		Name:      name,
+		Slug:      util.Slugify(name),
+		SortOrder: sortOrder,
+		IsActive:  true,
 	}
-	return out, rows.Err()
+	if err := r.db.Create(&c).Error; err != nil {
+		return category.Category{}, err
+	}
+	return c, nil
 }
 
-func (r *Repo) Create(ctx context.Context, name string, sortOrder int) (category.Category, error) {
-	slug := util.Slugify(name)
-
+func (r *Repo) Update(id int64, name *string, sortOrder *int, isActive *bool) (category.Category, error) {
 	var c category.Category
-	err := r.db.QueryRow(ctx, `
-		INSERT INTO categories (name, slug, sort_order, is_active)
-		VALUES ($1, $2, $3, true)
-		RETURNING id, name, slug, is_active, sort_order, created_at, updated_at
-	`, name, slug, sortOrder).Scan(
-		&c.ID, &c.Name, &c.Slug, &c.IsActive, &c.SortOrder, &c.CreatedAt, &c.UpdatedAt,
-	)
-	return c, err
-}
+	if err := r.db.First(&c, id).Error; err != nil {
+		return category.Category{}, err
+	}
 
-func (r *Repo) Update(ctx context.Context, id int64, name *string, sortOrder *int, isActive *bool) (category.Category, error) {
-	// Keep slug synced with name if name updated (simple approach)
-	var c category.Category
-	err := r.db.QueryRow(ctx, `
-		UPDATE categories
-		SET
-		  name = COALESCE($2, name),
-		  slug = CASE WHEN $2 IS NULL THEN slug ELSE $5 END,
-		  sort_order = COALESCE($3, sort_order),
-		  is_active = COALESCE($4, is_active)
-		WHERE id = $1
-		RETURNING id, name, slug, is_active, sort_order, created_at, updated_at
-	`, id, name, sortOrder, isActive, func() any {
-		if name == nil {
-			return nil
+	updates := map[string]interface{}{}
+	if name != nil {
+		updates["name"] = *name
+		updates["slug"] = util.Slugify(*name)
+	}
+	if sortOrder != nil {
+		updates["sort_order"] = *sortOrder
+	}
+	if isActive != nil {
+		updates["is_active"] = *isActive
+	}
+
+	if len(updates) > 0 {
+		if err := r.db.Model(&c).Updates(updates).Error; err != nil {
+			return category.Category{}, err
 		}
-		s := util.Slugify(*name)
-		return s
-	}()).Scan(&c.ID, &c.Name, &c.Slug, &c.IsActive, &c.SortOrder, &c.CreatedAt, &c.UpdatedAt)
-	return c, err
+	}
+
+	// Reload to return fresh data
+	r.db.First(&c, id)
+	return c, nil
 }

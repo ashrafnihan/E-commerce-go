@@ -9,9 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"ecommerce/internal/config"
-	"ecommerce/internal/domain/user"
 	"ecommerce/internal/mail"
 	"ecommerce/internal/util"
+	"ecommerce/internal/domain/user"
 )
 
 const (
@@ -81,19 +81,17 @@ func (h *Handler) Register(c *gin.Context) {
 		return
 	}
 
-	// Create user (default role = user). EmailVerified should be false by default.
-	u, err := h.deps.Users.Create(c.Request.Context(), req.Email, pwHash, "user")
+	u, err := h.deps.Users.Create(req.Email, pwHash, "user")
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "email already exists"})
 		return
 	}
 
-	otp, exp, err := h.issueOTP(c, u.ID, OTPPurposeVerifyEmail)
+	otp, exp, err := h.issueOTP(u.ID, OTPPurposeVerifyEmail)
 	if err == nil {
 		_ = h.sendOTPEmail(u.Email, otp, exp, "Verify your email")
 	}
 
-	// Do NOT login user until verified (common website behavior)
 	c.JSON(http.StatusCreated, gin.H{
 		"ok":      true,
 		"message": "Account created. OTP sent to your email for verification.",
@@ -108,9 +106,8 @@ func (h *Handler) ResendVerifyOTP(c *gin.Context) {
 	}
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 
-	u, err := h.deps.Users.ByEmail(c.Request.Context(), req.Email)
+	u, err := h.deps.Users.ByEmail(req.Email)
 	if err != nil || !u.IsActive {
-		// privacy: always ok
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
@@ -119,7 +116,7 @@ func (h *Handler) ResendVerifyOTP(c *gin.Context) {
 		return
 	}
 
-	otp, exp, err := h.issueOTP(c, u.ID, OTPPurposeVerifyEmail)
+	otp, exp, err := h.issueOTP(u.ID, OTPPurposeVerifyEmail)
 	if err == nil {
 		_ = h.sendOTPEmail(u.Email, otp, exp, "Verify your email")
 	}
@@ -135,7 +132,7 @@ func (h *Handler) VerifyEmailOTP(c *gin.Context) {
 	}
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 
-	u, err := h.deps.Users.ByEmail(c.Request.Context(), req.Email)
+	u, err := h.deps.Users.ByEmail(req.Email)
 	if err != nil || !u.IsActive {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
@@ -145,7 +142,7 @@ func (h *Handler) VerifyEmailOTP(c *gin.Context) {
 		return
 	}
 
-	ok, err := h.verifyOTP(c, u.ID, OTPPurposeVerifyEmail, req.OTP)
+	ok, err := h.verifyOTP(u.ID, OTPPurposeVerifyEmail, req.OTP)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -155,8 +152,8 @@ func (h *Handler) VerifyEmailOTP(c *gin.Context) {
 		return
 	}
 
-	_ = h.deps.Users.SetEmailVerified(c.Request.Context(), u.ID)
-	_ = h.deps.OTP.Delete(c.Request.Context(), u.ID, OTPPurposeVerifyEmail)
+	_ = h.deps.Users.SetEmailVerified(u.ID)
+	_ = h.deps.OTP.Delete(u.ID, OTPPurposeVerifyEmail)
 
 	c.JSON(http.StatusOK, gin.H{
 		"ok":      true,
@@ -172,13 +169,12 @@ func (h *Handler) Login(c *gin.Context) {
 	}
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 
-	u, err := h.deps.Users.ByEmail(c.Request.Context(), req.Email)
+	u, err := h.deps.Users.ByEmail(req.Email)
 	if err != nil || !u.IsActive {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
-	// block login if not verified
 	if !u.EmailVerified {
 		c.JSON(http.StatusForbidden, gin.H{"error": "email not verified"})
 		return
@@ -191,7 +187,7 @@ func (h *Handler) Login(c *gin.Context) {
 
 	access, accessExp, _ := h.deps.JWT.SignAccess(u.ID, u.Role)
 	refresh, refreshExp, _ := h.deps.JWT.SignRefresh(u.ID, u.Role)
-	_ = h.deps.Refresh.Store(c.Request.Context(), u.ID, HashToken(refresh), refreshExp)
+	_ = h.deps.Refresh.Store(u.ID, HashToken(refresh), refreshExp)
 
 	c.JSON(http.StatusOK, gin.H{
 		"user":          sanitizeUser(u),
@@ -216,17 +212,17 @@ func (h *Handler) Refresh(c *gin.Context) {
 		return
 	}
 
-	ok, err := h.deps.Refresh.IsValid(c.Request.Context(), claims.UserID, HashToken(req.RefreshToken))
+	ok, err := h.deps.Refresh.IsValid(claims.UserID, HashToken(req.RefreshToken))
 	if err != nil || !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "refresh token expired or revoked"})
 		return
 	}
 
-	_ = h.deps.Refresh.Revoke(c.Request.Context(), claims.UserID, HashToken(req.RefreshToken))
+	_ = h.deps.Refresh.Revoke(claims.UserID, HashToken(req.RefreshToken))
 
 	access, accessExp, _ := h.deps.JWT.SignAccess(claims.UserID, claims.Role)
 	newRefresh, refreshExp, _ := h.deps.JWT.SignRefresh(claims.UserID, claims.Role)
-	_ = h.deps.Refresh.Store(c.Request.Context(), claims.UserID, HashToken(newRefresh), refreshExp)
+	_ = h.deps.Refresh.Store(claims.UserID, HashToken(newRefresh), refreshExp)
 
 	c.JSON(http.StatusOK, gin.H{
 		"access_token":  access,
@@ -244,7 +240,7 @@ func (h *Handler) Logout(c *gin.Context) {
 	}
 	claims, err := h.deps.JWT.ParseRefresh(req.RefreshToken)
 	if err == nil {
-		_ = h.deps.Refresh.Revoke(c.Request.Context(), claims.UserID, HashToken(req.RefreshToken))
+		_ = h.deps.Refresh.Revoke(claims.UserID, HashToken(req.RefreshToken))
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -258,13 +254,13 @@ func (h *Handler) ForgotPassword(c *gin.Context) {
 	}
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 
-	u, err := h.deps.Users.ByEmail(c.Request.Context(), req.Email)
+	u, err := h.deps.Users.ByEmail(req.Email)
 	if err != nil || !u.IsActive {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 		return
 	}
 
-	otp, exp, err := h.issueOTP(c, u.ID, OTPPurposeResetPassword)
+	otp, exp, err := h.issueOTP(u.ID, OTPPurposeResetPassword)
 	if err == nil {
 		_ = h.sendOTPEmail(u.Email, otp, exp, "Reset password OTP")
 	}
@@ -281,13 +277,13 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 	}
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
 
-	u, err := h.deps.Users.ByEmail(c.Request.Context(), req.Email)
+	u, err := h.deps.Users.ByEmail(req.Email)
 	if err != nil || !u.IsActive {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
 
-	ok, err := h.verifyOTP(c, u.ID, OTPPurposeResetPassword, req.OTP)
+	ok, err := h.verifyOTP(u.ID, OTPPurposeResetPassword, req.OTP)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -302,12 +298,12 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "password hash failed"})
 		return
 	}
-	if err := h.deps.Users.UpdatePassword(c.Request.Context(), u.ID, newHash); err != nil {
+	if err := h.deps.Users.UpdatePassword(u.ID, newHash); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "password update failed"})
 		return
 	}
 
-	_ = h.deps.OTP.Delete(c.Request.Context(), u.ID, OTPPurposeResetPassword)
+	_ = h.deps.OTP.Delete(u.ID, OTPPurposeResetPassword)
 
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -316,7 +312,7 @@ func (h *Handler) Me(c *gin.Context) {
 	uidAny, _ := c.Get(CtxUserIDKey)
 	uid, _ := uidAny.(int64)
 
-	u, err := h.deps.Users.ByID(c.Request.Context(), uid)
+	u, err := h.deps.Users.ByID(uid)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
@@ -336,7 +332,7 @@ func sanitizeUser(u user.User) gin.H {
 	}
 }
 
-func (h *Handler) issueOTP(c *gin.Context, userID int64, purpose string) (string, time.Time, error) {
+func (h *Handler) issueOTP(userID int64, purpose string) (string, time.Time, error) {
 	otp, err := util.GenerateOTP6()
 	if err != nil {
 		return "", time.Time{}, err
@@ -351,17 +347,17 @@ func (h *Handler) issueOTP(c *gin.Context, userID int64, purpose string) (string
 	if h.deps.OTP == nil {
 		return "", time.Time{}, errors.New("otp repo not configured")
 	}
-	if err := h.deps.OTP.Upsert(c.Request.Context(), userID, purpose, HashToken(otp), expiresAt); err != nil {
+	if err := h.deps.OTP.Upsert(userID, purpose, HashToken(otp), expiresAt); err != nil {
 		return "", time.Time{}, err
 	}
 	return otp, expiresAt, nil
 }
 
-func (h *Handler) verifyOTP(c *gin.Context, userID int64, purpose string, otp string) (bool, error) {
+func (h *Handler) verifyOTP(userID int64, purpose string, otp string) (bool, error) {
 	if h.deps.OTP == nil {
 		return false, errors.New("otp repo not configured")
 	}
-	hash, exp, ok, _ := h.deps.OTP.GetValid(c.Request.Context(), userID, purpose)
+	hash, exp, ok, _ := h.deps.OTP.GetValid(userID, purpose)
 	if !ok || time.Now().After(exp) {
 		return false, nil
 	}
@@ -369,7 +365,6 @@ func (h *Handler) verifyOTP(c *gin.Context, userID int64, purpose string, otp st
 }
 
 func (h *Handler) sendMailSafe(to, subject, body string) error {
-	// website style: do not fail request if mail fails
 	return h.deps.Mailer.Send(to, subject, body)
 }
 

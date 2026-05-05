@@ -1,33 +1,34 @@
 package products
 
 import (
-	"context"
 	"fmt"
+	"math"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"ecommerce/internal/domain/product"
 )
 
 type Repo struct {
-	db *pgxpool.Pool
+	db *gorm.DB
 }
 
-func NewRepo(db *pgxpool.Pool) *Repo {
+func NewRepo(db *gorm.DB) *Repo {
 	return &Repo{db: db}
 }
 
-// Create type if not exists for a category (so admin can type "Formal" and next time it shows)
-func (r *Repo) GetOrCreateType(ctx context.Context, categoryID int64, typeName string) (int64, error) {
-	var id int64
-	err := r.db.QueryRow(ctx, `
-		INSERT INTO product_types (category_id, name)
-		VALUES ($1, $2)
-		ON CONFLICT (category_id, name) DO UPDATE SET name = EXCLUDED.name
-		RETURNING id
-	`, categoryID, typeName).Scan(&id)
-	return id, err
+// GetOrCreateType finds or creates a product_type for a category
+func (r *Repo) GetOrCreateType(categoryID int64, typeName string) (int64, error) {
+	pt := product.ProductType{
+		CategoryID: categoryID,
+		Name:       typeName,
+	}
+	err := r.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "category_id"}, {Name: "name"}},
+		DoUpdates: clause.AssignmentColumns([]string{"name"}),
+	}).Create(&pt).Error
+	return pt.ID, err
 }
 
 type CreateProductInput struct {
@@ -36,8 +37,7 @@ type CreateProductInput struct {
 	Name        string
 	Description string
 	CreatedBy   int64
-
-	Variants []CreateVariantInput
+	Variants    []CreateVariantInput
 }
 
 type CreateVariantInput struct {
@@ -48,74 +48,83 @@ type CreateVariantInput struct {
 	StockQty        int
 }
 
-func (r *Repo) CreateProductWithVariants(ctx context.Context, in CreateProductInput) (product.Product, error) {
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
-	if err != nil {
-		return product.Product{}, err
+func (r *Repo) CreateProductWithVariants(in CreateProductInput) (product.Product, error) {
+	tx := r.db.Begin()
+	if tx.Error != nil {
+		return product.Product{}, tx.Error
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	typeID, err := func() (int64, error) {
-		var id int64
-		err := tx.QueryRow(ctx, `
-			INSERT INTO product_types (category_id, name)
-			VALUES ($1, $2)
-			ON CONFLICT (category_id, name) DO UPDATE SET name = EXCLUDED.name
-			RETURNING id
-		`, in.CategoryID, in.TypeName).Scan(&id)
-		return id, err
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
 	}()
+
+	// Get or create product type
+	pt := product.ProductType{
+		CategoryID: in.CategoryID,
+		Name:       in.TypeName,
+	}
+	err := tx.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "category_id"}, {Name: "name"}},
+		DoUpdates: clause.AssignmentColumns([]string{"name"}),
+	}).Create(&pt).Error
 	if err != nil {
+		tx.Rollback()
 		return product.Product{}, err
 	}
 
-	var p product.Product
-	err = tx.QueryRow(ctx, `
-		INSERT INTO products (category_id, type_id, name, description, created_by, is_active)
-		VALUES ($1,$2,$3,$4,$5,true)
-		RETURNING id, category_id, type_id, name, description, is_active, created_by, created_at, updated_at
-	`, in.CategoryID, typeID, in.Name, in.Description, in.CreatedBy).Scan(
-		&p.ID, &p.CategoryID, &p.TypeID, &p.Name, &p.Description, &p.IsActive, &p.CreatedBy, &p.CreatedAt, &p.UpdatedAt,
-	)
-	if err != nil {
+	// Create product
+	p := product.Product{
+		CategoryID:  in.CategoryID,
+		TypeID:      pt.ID,
+		Name:        in.Name,
+		Description: in.Description,
+		IsActive:    true,
+		CreatedBy:   &in.CreatedBy,
+	}
+	if err := tx.Create(&p).Error; err != nil {
+		tx.Rollback()
 		return product.Product{}, err
 	}
 
+	// Create variants
 	for _, v := range in.Variants {
-		_, err := tx.Exec(ctx, `
-			INSERT INTO product_variants (product_id, size, color, price, discount_percent, stock_qty)
-			VALUES ($1,$2,$3,$4,$5,$6)
-		`, p.ID, v.Size, v.Color, v.Price, v.DiscountPercent, v.StockQty)
-		if err != nil {
+		variant := product.Variant{
+			ProductID:       p.ID,
+			Size:            v.Size,
+			Color:           v.Color,
+			Price:           v.Price,
+			DiscountPercent: v.DiscountPercent,
+			StockQty:        v.StockQty,
+		}
+		if err := tx.Create(&variant).Error; err != nil {
+			tx.Rollback()
 			return product.Product{}, fmt.Errorf("variant insert failed: %w", err)
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		return product.Product{}, err
 	}
 	return p, nil
 }
 
-func (r *Repo) ListPublic(ctx context.Context, categorySlug *string) ([]product.Product, error) {
-	q := `
-		SELECT
-		  p.id, p.category_id, p.type_id, p.name, COALESCE(p.description,''), p.is_active, p.created_at, p.updated_at,
-		  c.name as category_name,
-		  pt.name as type_name
-		FROM products p
-		JOIN categories c ON c.id = p.category_id
-		JOIN product_types pt ON pt.id = p.type_id
-		WHERE p.is_active = true AND c.is_active = true
-	`
-	args := []any{}
-	if categorySlug != nil && *categorySlug != "" {
-		q += " AND c.slug = $1 "
-		args = append(args, *categorySlug)
-	}
-	q += " ORDER BY p.created_at DESC "
+func (r *Repo) ListPublic(categorySlug *string) ([]product.Product, error) {
+	query := r.db.Table("products p").
+		Select(`p.id, p.category_id, p.type_id, p.name, COALESCE(p.description,'') as description,
+		        p.is_active, p.created_at, p.updated_at,
+		        c.name as category, pt.name as type_name`).
+		Joins("JOIN categories c ON c.id = p.category_id").
+		Joins("JOIN product_types pt ON pt.id = p.type_id").
+		Where("p.is_active = ? AND c.is_active = ?", true, true)
 
-	rows, err := r.db.Query(ctx, q, args...)
+	if categorySlug != nil && *categorySlug != "" {
+		query = query.Where("c.slug = ?", *categorySlug)
+	}
+
+	query = query.Order("p.created_at DESC")
+
+	rows, err := query.Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -125,53 +134,48 @@ func (r *Repo) ListPublic(ctx context.Context, categorySlug *string) ([]product.
 	for rows.Next() {
 		var p product.Product
 		if err := rows.Scan(
-			&p.ID, &p.CategoryID, &p.TypeID, &p.Name, &p.Description, &p.IsActive, &p.CreatedAt, &p.UpdatedAt,
+			&p.ID, &p.CategoryID, &p.TypeID, &p.Name, &p.Description,
+			&p.IsActive, &p.CreatedAt, &p.UpdatedAt,
 			&p.Category, &p.TypeName,
 		); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-func (r *Repo) GetProductPublic(ctx context.Context, id int64) (product.Product, error) {
+func (r *Repo) GetProductPublic(id int64) (product.Product, error) {
 	var p product.Product
-	err := r.db.QueryRow(ctx, `
-		SELECT
-		  p.id, p.category_id, p.type_id, p.name, COALESCE(p.description,''), p.is_active, p.created_at, p.updated_at,
-		  c.name as category_name, pt.name as type_name
-		FROM products p
-		JOIN categories c ON c.id = p.category_id
-		JOIN product_types pt ON pt.id = p.type_id
-		WHERE p.id = $1 AND p.is_active = true AND c.is_active = true
-	`, id).Scan(
-		&p.ID, &p.CategoryID, &p.TypeID, &p.Name, &p.Description, &p.IsActive, &p.CreatedAt, &p.UpdatedAt,
+
+	err := r.db.Table("products p").
+		Select(`p.id, p.category_id, p.type_id, p.name, COALESCE(p.description,'') as description,
+		        p.is_active, p.created_at, p.updated_at,
+		        c.name as category, pt.name as type_name`).
+		Joins("JOIN categories c ON c.id = p.category_id").
+		Joins("JOIN product_types pt ON pt.id = p.type_id").
+		Where("p.id = ? AND p.is_active = ? AND c.is_active = ?", id, true, true).
+		Row().Scan(
+		&p.ID, &p.CategoryID, &p.TypeID, &p.Name, &p.Description,
+		&p.IsActive, &p.CreatedAt, &p.UpdatedAt,
 		&p.Category, &p.TypeName,
 	)
 	if err != nil {
 		return product.Product{}, err
 	}
 
-	rows, err := r.db.Query(ctx, `
-		SELECT id, product_id, size, color, price, discount_percent,
-		       ROUND(price * (100 - discount_percent) / 100.0, 2) as final_price,
-		       stock_qty, created_at, updated_at
-		FROM product_variants
-		WHERE product_id = $1
-		ORDER BY id ASC
-	`, p.ID)
+	// Load variants
+	var variants []product.Variant
+	err = r.db.Where("product_id = ?", p.ID).Order("id ASC").Find(&variants).Error
 	if err != nil {
 		return product.Product{}, err
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var v product.Variant
-		if err := rows.Scan(&v.ID, &v.ProductID, &v.Size, &v.Color, &v.Price, &v.DiscountPercent, &v.FinalPrice, &v.StockQty, &v.CreatedAt, &v.UpdatedAt); err != nil {
-			return product.Product{}, err
-		}
-		p.Variants = append(p.Variants, v)
+	// Compute final price for each variant
+	for i := range variants {
+		variants[i].FinalPrice = math.Round(variants[i].Price*float64(100-variants[i].DiscountPercent)) / 100.0
 	}
-	return p, rows.Err()
+	p.Variants = variants
+
+	return p, nil
 }
